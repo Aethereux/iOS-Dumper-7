@@ -88,7 +88,8 @@ void Generator::InitEngineCore()
 
 	ObjectArray::Init();
 //    FName::Init((int32)0x0CB41B80, FName::EOffsetOverrideType::GNames, true, "UAGame"); // ArenaBreakout
-    FName::Init((int32)0x05E4AD40, FName::EOffsetOverrideType::GNames, true, "ShooterGame"); // ARK Revamp
+//    FName::Init((int32)0x05E4AD40, FName::EOffsetOverrideType::GNames, true, "ShooterGame"); // ARK Revamp
+    FName::Init();
 	Off::Init();
 	PropertySizes::Init();
 	Off::InSDK::ProcessEvent::InitPE(69); //Must be at this position, relies on offsets initialized in Off::Init()

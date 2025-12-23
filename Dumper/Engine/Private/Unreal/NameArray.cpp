@@ -221,9 +221,9 @@ bool NameArray::InitializeNamePool(uint8* NamePool)
     LogInfo("Initializing FNamePool...");
 
     // Default initialization
-    Off::NameArray::MaxChunkIndex = 0x0;
-    Off::NameArray::ByteCursor = 0x4;
-    Off::NameArray::ChunksStart = 0x10;
+    Off::NameArray::MaxChunkIndex = 0xC8;
+    Off::NameArray::ByteCursor = 0xCC;
+    Off::NameArray::ChunksStart = 0xD0;
 
     bool bWasMaxChunkIndexFound = false;
     // Basic pointer check
@@ -457,86 +457,76 @@ bool NameArray::TryFindNameArray()
 bool NameArray::TryFindNamePool()
 {
     LogInfo("Searching for FNamePool GNames...");
+    auto GetARM64Reg = [](uint32 Instruction) -> int { return Instruction & 0x1F; };
+    auto ResolveARM64Adr = [](uintptr AdrpAddr, uint32 AdrpInst, uint32 AddInst) -> uintptr {
+        // Decode ADRP (Page Address)
+        int32_t immlo = (AdrpInst >> 29) & 0x3;
+        int32_t immhi = (AdrpInst >> 5) & 0x7FFFF;
+        int64_t imm = (immhi << 2) | immlo;
+        // Sign extend 21-bit immediate to 64-bit
+        if (imm & 0x100000) imm |= ~0xFFFFF;
+        // ADRP calculates relative to the 4KB page of the PC
+        uintptr_t PageBase = AdrpAddr & ~0xFFF;
+        uintptr_t PageOffset = imm << 12;
+        uintptr_t BaseAddr = PageBase + PageOffset;
+        // Decode ADD (Page Offset)
+        // imm12: bits 10-21
+        uint32_t imm12 = (AddInst >> 10) & 0xFFF;
+        return BaseAddr + imm12;
+    };
     
-    // iOS: Replaced Windows-specific x64 pattern "48 8D 0D ..." with generic string search
-    // "ByteProperty" is a very strong anchor for FNamePool.
-
-    /* Singleton instance of FNamePool */
-    void* NamePoolIntance = nullptr;
-    
-    // Try to find "ByteProperty" string ref
-    LogInfo("Searching for ByteProperty string reference...");
-    MemAddress StringRef = FindByStringInAllSections(TEXT("ByteProperty"));
-    if (!StringRef) StringRef = FindByStringInAllSections("ByteProperty");
-    LogInfo("ByteProperty StringRef: 0x%p", (void*)StringRef);
-    
-    if (StringRef) {
-        // We found where "ByteProperty" is used.
-        // In FNamePool constructor, it initializes the pool.
-        // We scan nearby for the pool structure.
-        
-        LogInfo("Scanning memory range for NamePool structure...");
-        uintptr Address = StringRef;
-        uintptr ScanStart = Address - 0x200;
-        uintptr ScanEnd = Address + 0x200;
-        LogInfo("Scan range: 0x%lX to 0x%lX", ScanStart, ScanEnd);
-        
-        int scanCount = 0;
-        for (uintptr Ptr = ScanStart; Ptr < ScanEnd; Ptr += 8) {
-             scanCount++;
-             if (scanCount % 32 == 0) {
-                 LogInfo("Scanned %d addresses, current: 0x%lX", scanCount, Ptr);
-             }
-             // On ARM64, the address of the NamePool global might be loaded relative to PC.
-             // We check if any value here looks like a NamePool.
-             
-             // NamePool usually starts with [NextChunkIndex (int32)] [ByteCursor (int32)] ...
-             // We can check if reinterpret_cast<uint8*>(Ptr) is a valid pool.
-             
-             // However, NameArray::InitializeNamePool takes the POINTER to the pool data,
-             // or the pool structure itself?
-             // GNames in FNamePool mode points to the Pool struct.
-             
-             if (IsBadReadPtr(Ptr)) continue;
-             
-             // Check if this address itself acts as a NamePool (static instance)
-             // or if it points to one.
-             
-             if (scanCount % 32 == 0) {
-                 LogInfo("Testing address 0x%lX as direct NamePool", Ptr);
-             }
-             if (NameArray::InitializeNamePool(reinterpret_cast<uint8*>(Ptr))) {
-                 Off::InSDK::NameArray::GNames = (int32)GetOffset(Ptr);
-                 LogSuccess("Found NamePool at direct address 0x%lX", Ptr);
-                 return true;
-             }
-             
-             // Check if it's a pointer to the pool
-             void* Candidate = *reinterpret_cast<void**>(Ptr);
-             if (IsBadReadPtr(Candidate)) continue;
-             
-             if (scanCount % 32 == 0) {
-                 LogInfo("Testing 0x%lX -> 0x%p as indirect NamePool", Ptr, Candidate);
-             }
-             if (NameArray::InitializeNamePool(reinterpret_cast<uint8*>(Candidate))) {
-                 Off::InSDK::NameArray::GNames = (int32)GetOffset(Ptr); // The pointer location is GNames
-                 LogSuccess("Found NamePool via pointer at 0x%lX -> 0x%p", Ptr, Candidate);
-                 return true;
-             }
-        }
-        LogInfo("Completed scanning %d addresses, no NamePool found", scanCount);
-    } else {
-        LogError("ByteProperty string reference not found for NamePool search");
+    uintptr_t StringRefAddr = FindByStringInAllSections(TEXT("ERROR_NAME_SIZE_EXCEEDED"));
+    if (!StringRefAddr)
+        StringRefAddr = FindByStringInAllSections("ERROR_NAME_SIZE_EXCEEDED");
+    if (!StringRefAddr) {
+        LogError("Could not find 'ERROR_NAME_SIZE_EXCEEDED' string reference.");
+        return false;
     }
-
-    if (NamePoolIntance)
+    
+    LogInfo("[NameArray] Found Error String Ref at 0x%p", (void*)StringRefAddr);
+    constexpr int32_t ScanRange   = 0x80;       constexpr uint32_t MaskADRP = 0x9F000000;
+    constexpr uint32_t OpcodeADRP = 0x90000000; constexpr uint32_t MaskADD  = 0xFFC00000;
+    constexpr uint32_t OpcodeADD  = 0x91000000;
+    
+    for (int i = 4; i < ScanRange; i += 4)
     {
-        LogSuccess("Using NamePoolInstance at 0x%p", NamePoolIntance);
-        Off::InSDK::NameArray::GNames = (int32)GetOffset(NamePoolIntance);
-        return true;
-    }
+        uintptr_t CurrentAddr = StringRefAddr + i;
+        if (IsBadReadPtr(CurrentAddr))
+            continue;
+        uint32_t Inst = *reinterpret_cast<uint32_t*>(CurrentAddr);
+        // Is this an ADRP instruction?
+        if ((Inst & MaskADRP) != OpcodeADRP)
+            continue;
+        //  Does it target register X0? (Rd == 0)
+        if (GetARM64Reg(Inst) != 0)
+            continue;
 
-    LogError("TryFindNamePool failed - no valid NamePool found");
+        // Found potential ADRP. Now check the next 1-2 instructions for the pairing ADD.
+        for (int k = 4; k <= 8; k += 4)
+        {
+            uintptr_t NextAddr = CurrentAddr + k;
+            if (IsBadReadPtr(NextAddr))
+                continue;
+
+            uint32_t NextInst = *reinterpret_cast<uint32_t*>(NextAddr);
+            // Is this an ADD (immediate) instruction?
+            if ((NextInst & MaskADD) != OpcodeADD)
+                continue;
+            // Are both Destination (Rd) and Source (Rn) X0?
+            int AddRd = GetARM64Reg(NextInst);
+            int AddRn = (NextInst >> 5) & 0x1F;
+            if (AddRd != 0 || AddRn != 0)
+                continue;
+
+            // Sequence Matched: Resolve the address
+            uintptr_t ResolvedGNamesAddr = ResolveARM64Adr(CurrentAddr, Inst, NextInst);
+            LogSuccess("Resolved GNames Address: 0x%p (from instruction at 0x%p)", (void*)ResolvedGNamesAddr, (void*)CurrentAddr);
+            Off::InSDK::NameArray::GNames = (int32)GetOffset(ResolvedGNamesAddr);
+            LogSuccess("Found NamePool at 0x%p", (void*)ResolvedGNamesAddr);
+            return true;
+        }
+    }
+    LogError("TryFindNamePool failed - instruction pattern not found.");
     return false;
 }
 
