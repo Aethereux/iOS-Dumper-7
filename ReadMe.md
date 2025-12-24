@@ -106,3 +106,10 @@ Off::InSDK::ProcessEvent::InitPE(69);
 * **Aethereux**: Ported and adapted for iOS/ARM64.
 
 * Contributions are Highly Appreciated for more improvements!
+
+## TODO
+
+- Find ProcessEvent Offset in the Memory (Not Manual Overwrites)
+- Find NamesArray (For UE below 4.22) in Memory
+- Fix Fallback Methods in Finding FNames (AppendString at UnrealTypes.cpp)
+

@@ -232,7 +232,7 @@ bool NameArray::InitializeNamePool(uint8* NamePool)
         return false;
     }
 
-    // usually at iOS it is MaxBlockOffsets (ChunkStart) is located at 0xD0
+    // usually at iOS, MaxBlockOffsets (ChunkStart) is located at 0xD0
     for (int i = 0x0; i < 0x200; i += 4)
     {
         if (IsBadReadPtr(NamePool + i)) break;
